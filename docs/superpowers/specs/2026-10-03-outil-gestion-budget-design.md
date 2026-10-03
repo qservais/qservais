@@ -140,7 +140,7 @@ Revolut payée par carte → Virement interne.
 
 - **État actuel** (jaune) : Poste | Type | Valeur. Types : `Liquidités`,
   `Épargne`, `Investissement`, `Immobilier`, `Dette` (valeur saisie positive,
-  comptée en négatif). Postes par défaut : Belfius, Revolut, Espèces,
+  comptée en négatif). Postes par défaut : Belfius, Revolut, Espèces, Mastercard (encours, en Dette),
   Épargne SOS, ETF, Crypto, Maison (valeur estimée), Prêt maison (capital
   restant), Prêt perso (restant), Autres dettes.
 - **Historique** (rempli par la clôture) : Mois | Poste | Type | Valeur.
