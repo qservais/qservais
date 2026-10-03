@@ -66,7 +66,7 @@ Transformer le plan en **outil de gestion** utilisé chaque semaine/mois :
 
 | Onglet | Rôle | Remplissage |
 |---|---|---|
-| `Tableau de bord` | Mois en cours (réel vs prévu, reste à dépenser), alertes, objectifs, valeur nette | Formules (+ sélecteur de mois) |
+| `Tableau de bord` | Mois en cours (réel vs prévu, reste à dépenser), **trésorerie nette** (comptes − encours carte), alertes, objectifs, valeur nette | Formules (+ sélecteur de mois) |
 | `Plan` | Projection mensuelle, recalée sur le réel | Formules |
 | `Réel vs Prévu` | Par mois × ligne : prévu, réel, écart, % consommé, reste ; historique 12 mois | Formules |
 | `Journal` | Toutes les transactions réelles | Script (import, formulaire) + corrections manuelles |
@@ -178,7 +178,12 @@ dans le Plan, mois en cours) | Statut | Progression (barre texte `REPT("█")`).
      JJ-MM-AAAA) ±montant » suivies de lignes de description ; solde
      d'ouverture « SOLDE AU … » et solde de clôture en fin de relevé ;
      en-têtes/pieds de page répétés à ignorer ;
-   - *Belfius Mastercard* : format à figer sur l'exemple réel (prérequis) ;
+   - *Belfius Mastercard* (« ÉTAT DES DÉPENSES ») : en-tête avec date de
+     clôture, date de débit, période « Transactions du … au … » ; lignes
+     « JJ/MM JJ/MM DESCRIPTION LIEU PAYS montant EUR ± » (année déduite de
+     la période ; `+` = remboursement/crédit), ligne de détail facultative
+     « (Via Apple Pay) » ; ligne « Total … EUR − » ; en-têtes répétés à
+     chaque page ;
    - *Revolut* : tableau « Date de valeur / Date de réception / Description
      / Argent sortant / Argent entrant / Solde », dates « 7 sept. 2026 »,
      montants « 9,99€ », lignes « ID de transaction », « De : », « À : »
@@ -188,10 +193,16 @@ dans le Plan, mois en cours) | Statut | Progression (barre texte `REPT("█")`).
 4. **Normalisation** : date, compte, libellé (texte de l'opération, sans
    références techniques), montant signé (négatif = sortie), identifiant
    bancaire si présent (n° d'opération Belfius, ID Revolut).
-5. **Contrôle par les soldes (garde-fou principal)** : solde d'ouverture +
-   somme des opérations lues doit égaler le solde de clôture **au centime**.
-   Sinon l'import est refusé avec l'écart constaté. Ce contrôle détecte
-   toute opération manquée ou mal lue.
+5. **Contrôle des montants (garde-fou principal)**, refus de l'import avec
+   l'écart constaté s'il échoue :
+   - compte à vue et Revolut : solde d'ouverture + somme des opérations =
+     solde de clôture, **au centime** ;
+   - Mastercard (pas de solde sur le relevé) : somme des opérations =
+     ligne « Total », au centime.
+   Ce contrôle détecte toute opération manquée ou mal lue.
+   **Contrôle croisé** (avertissement, non bloquant) : le total d'un relevé
+   Mastercard doit correspondre à un prélèvement « RELEVE MASTERCARD » du
+   même montant sur le compte à vue autour de la date de débit.
 6. **Empreinte** = identifiant bancaire s'il existe ; sinon compte | date |
    montant | libellé normalisé | rang d'occurrence. Toute empreinte déjà
    présente dans le Journal est ignorée → réimporter un relevé ou des
@@ -217,8 +228,16 @@ les virements entre ses propres comptes. Ainsi chaque dépense est comptée
 une seule fois, au moment de l'achat. L'encours de la carte apparaît comme
 `Dette` dans le Patrimoine.
 
-Prérequis d'implémentation : un **relevé Mastercard** réel pour figer son
-parseur. Les fixtures de test sont des extraits **anonymisés et
+Les recharges Revolut payées par la carte apparaissent sous deux formes :
+côté Mastercard « Revolut … (Via Apple Pay) », côté Revolut « Recharge sur
+Apple Pay via *NNNN » où NNNN est le **numéro de compte de l'appareil**
+Apple Pay, différent des 4 derniers chiffres imprimés sur la carte. Les
+règles de virement interne reposent donc sur les libellés (« Revolut »,
+« Recharge sur Apple Pay », virement vers/depuis son propre IBAN), pas sur
+le numéro de carte.
+
+Les trois formats ont été observés sur des relevés réels (structure
+seulement). Les fixtures de test sont des extraits **anonymisés et
 réécrits avec des valeurs fictives** (structure identique, aucune donnée
 réelle).
 
@@ -301,7 +320,14 @@ extra possible » du tableau de bord utilisent cette ligne.
 - Statut : `Atteint` si Actuel ≥ cible ; `À l'heure` si versement prévu ≥
   nécessaire ; sinon `En retard`.
 
-### 6.7 Patrimoine
+### 6.7 Trésorerie nette
+
+Trésorerie nette = Σ soldes `Liquidités` − encours de la carte de crédit
+(dernière valeur connue : État actuel du Patrimoine). Affichée sur le
+tableau de bord à côté du solde des comptes : un solde de compte élevé
+financé par la carte n'apparaît plus comme de l'argent disponible.
+
+### 6.8 Patrimoine
 
 Valeur nette = Σ actifs − Σ dettes (dont l'encours de la carte de
 crédit), par mois clôturé. Plus-value
@@ -386,8 +412,10 @@ classeur soit vérifiable automatiquement et reste utilisable dans Excel
    plusieurs lignes, en-têtes de page répétés, montants ≥ 1 000 avec
    séparateur de milliers), contrôle des soldes (cas juste et cas d'une
    opération manquante → refus), empreinte et dédoublonnage (réimport d'un
-   relevé qui chevauche), virements internes (remboursement Mastercard,
-   recharge Revolut par carte), conditions de montant des règles, priorité
+   relevé qui chevauche), contrôle du « Total » Mastercard et contrôle
+   croisé avec le prélèvement, virements internes (remboursement
+   Mastercard, recharge Revolut par carte, chaîne carte → Revolut →
+   compte à vue), conditions de montant des règles, priorité
    des règles, rapprochement mobile (cas : match, hors fenêtre, deux
    candidats, espèces jamais rapprochées).
 4. Validation sur les **vrais relevés de l'utilisateur, en local
