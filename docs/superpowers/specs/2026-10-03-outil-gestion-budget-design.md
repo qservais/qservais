@@ -2,6 +2,9 @@
 
 - **Date :** 2026-10-03
 - **Statut :** validé en brainstorming, en attente de relecture de la spec
+- **Révision 2 (2026-10-03) :** import des **relevés PDF** (pas de CSV
+  disponible), carte de crédit Mastercard ajoutée comme 3ᵉ compte, règles
+  avec condition de montant — après analyse de relevés réels
 - **Point de départ :** classeur « v2 » (plan prévisionnel) livré le 2026-10-03
 
 > Ce document ne contient volontairement aucune donnée financière personnelle
@@ -23,8 +26,9 @@ une boîte noire.
 
 Transformer le plan en **outil de gestion** utilisé chaque semaine/mois :
 
-1. suivre **chaque dépense réelle**, par ligne du budget, sur deux comptes
-   personnels (Belfius = compte salaire, Revolut = 2ᵉ compte perso) + espèces ;
+1. suivre **chaque dépense réelle**, par ligne du budget, sur trois comptes
+   (Belfius compte à vue = compte salaire, Belfius Mastercard = carte de
+   crédit, Revolut = 2ᵉ compte perso) + espèces ;
 2. comparer **réel vs prévu** et savoir **combien il reste à dépenser** ;
 3. **recaler** le plan sur le solde réel à chaque clôture mensuelle ;
 4. suivre des **objectifs** (fonds d'urgence, projets datés) ;
@@ -35,9 +39,10 @@ Transformer le plan en **outil de gestion** utilisé chaque semaine/mois :
 | Sujet | Décision |
 |---|---|
 | Usage | Suivi détaillé (chaque transaction) |
-| Saisie | Import des relevés CSV **et** saisie mobile |
+| Saisie | Import des **relevés PDF** **et** saisie mobile |
 | Plateforme | Google Sheets |
-| Banques | Belfius, Revolut (2ᵉ compte **perso**, pas partagé) |
+| Comptes | Belfius compte à vue, Belfius Mastercard (crédit), Revolut (2ᵉ compte **perso**), Espèces |
+| Format d'import | **PDF** des relevés officiels (aucun export CSV accessible) ; contrôle par les soldes |
 | Long terme | Objectifs/projets + Patrimoine |
 | Approche | **B** — formules visibles + Apps Script pour l'import et la clôture |
 | Catégories | **Un seul niveau** : une transaction est rangée dans une ligne du budget |
@@ -54,6 +59,8 @@ Transformer le plan en **outil de gestion** utilisé chaque semaine/mois :
 - Sous-catégories à deux niveaux.
 - Appli web dédiée, synchronisation bancaire automatique (PSD2/API).
 - Création de règles depuis le Journal en un clic.
+- Import CSV (aucun export CSV accessible à l'utilisateur ; à ajouter plus
+  tard comme second format si besoin).
 
 ## 3. Architecture des onglets
 
@@ -95,7 +102,7 @@ Changements :
 |---|---|---|
 | A | Date | date de l'opération (comptabilisation) |
 | B | Mois | `=DATE(YEAR(A),MONTH(A),1)` — mois civil |
-| C | Compte | `Belfius` / `Revolut` / `Espèces` |
+| C | Compte | `Belfius` / `Mastercard` / `Revolut` / `Espèces` |
 | D | Libellé | libellé bancaire normalisé (ou note mobile) |
 | E | Montant | signé : **négatif = sortie**, positif = entrée |
 | F | Ligne du budget | menu déroulant sur `Lignes` (+ lignes techniques) |
@@ -115,11 +122,19 @@ colonnes ouvertes.
 | B | Compte | vide = tous |
 | C | Le libellé contient | texte, insensible à la casse et aux accents |
 | D | Sens | vide / `Sortie` / `Entrée` |
-| E | Ligne du budget | menu ; peut être `Virement interne` |
+| E | Montant min | vide = pas de borne (valeur absolue) |
+| F | Montant max | vide = pas de borne (valeur absolue) |
+| G | Ligne du budget | menu ; peut être `Virement interne` |
+
+La condition de montant est nécessaire : certains flux récurrents se
+reconnaissent à leur montant plus qu'à leur libellé (ex. de nombreux petits
+virements entrants de même montant sans mot-clé constant).
 
 Exemples livrés (génériques) : supermarchés → Courses, stations-service →
-Carburant, virement vers son propre compte → Virement interne, retrait
-distributeur → Virement interne.
+Carburant, virement vers son propre IBAN → Virement interne, retrait
+distributeur → Virement interne, prélèvement « RELEVE MASTERCARD » sur le
+compte à vue → Virement interne (remboursement de la carte), recharge
+Revolut payée par carte → Virement interne.
 
 ### 4.4 `Patrimoine`
 
@@ -142,55 +157,87 @@ dans le Plan, mois en cours) | Statut | Progression (barre texte `REPT("█")`).
 - Mois de couverture du fonds d'urgence (défaut 6) ;
 - Seuil d'alerte « % consommé » (défaut 80 %) ;
 - Fenêtre de rapprochement mobile ↔ banque (défaut ± 3 jours) ;
-- Noms des comptes (Belfius, Revolut, Espèces).
+- Comptes : nom, type (`Compte à vue` / `Carte de crédit` / `Espèces`),
+  IBAN ou 4 derniers chiffres de carte (servent à reconnaître les virements
+  internes). Ces identifiants vivent dans le classeur de l'utilisateur,
+  jamais dans le dépôt.
 
 ## 5. Flux
 
-### 5.1 Import d'un relevé — `Budget → Importer un relevé`
+### 5.1 Import d'un relevé PDF — `Budget → Importer un relevé`
 
-1. Dialogue HTML avec sélecteur de fichier CSV (fait sur PC).
-2. **Détection du format** par la ligne d'en-tête (Belfius ou Revolut).
-   Format inconnu → message explicite, rien n'est écrit.
-3. **Normalisation** : date, compte, libellé (Belfius : nom de la
-   contrepartie + communication ; Revolut : description), montant signé
-   (Revolut : montant − frais), devise EUR uniquement (autre devise →
-   signalée « À classer » avec la devise dans la note). Revolut : seules les
-   opérations à l'état « terminé » sont importées.
-4. **Empreinte** = compte | date | montant | libellé normalisé | rang
-   d'occurrence de ce quadruplet dans le fichier. Toute empreinte déjà
-   présente dans le Journal est ignorée → réimporter un relevé qui chevauche
-   est sans danger.
-5. **Rapprochement mobile** : pour chaque nouvelle ligne bancaire, si une
+1. Dialogue HTML avec sélecteur de fichier **PDF** (un ou plusieurs
+   fichiers ; fait sur PC ou téléphone).
+2. **Extraction du texte dans le navigateur** avec pdf.js (chargé depuis
+   cdnjs dans le dialogue) : chaque page → lignes reconstituées à partir des
+   positions (y puis x) des fragments de texte, colonnes conservées grâce
+   à l'abscisse. Seul ce texte structuré est envoyé au script ; le PDF n'est
+   pas stocké.
+3. **Détection du type de relevé** par des marqueurs d'en-tête :
+   - *Belfius compte à vue* : lignes d'opération « NNNN JJ-MM-AAAA (VAL.
+     JJ-MM-AAAA) ±montant » suivies de lignes de description ; solde
+     d'ouverture « SOLDE AU … » et solde de clôture en fin de relevé ;
+     en-têtes/pieds de page répétés à ignorer ;
+   - *Belfius Mastercard* : format à figer sur l'exemple réel (prérequis) ;
+   - *Revolut* : tableau « Date de valeur / Date de réception / Description
+     / Argent sortant / Argent entrant / Solde », dates « 7 sept. 2026 »,
+     montants « 9,99€ », lignes « ID de transaction », « De : », « À : »
+     rattachées à l'opération ; le sens se déduit de la colonne (abscisse)
+     et est confirmé par la variation du solde.
+   Type inconnu → message explicite, rien n'est écrit.
+4. **Normalisation** : date, compte, libellé (texte de l'opération, sans
+   références techniques), montant signé (négatif = sortie), identifiant
+   bancaire si présent (n° d'opération Belfius, ID Revolut).
+5. **Contrôle par les soldes (garde-fou principal)** : solde d'ouverture +
+   somme des opérations lues doit égaler le solde de clôture **au centime**.
+   Sinon l'import est refusé avec l'écart constaté. Ce contrôle détecte
+   toute opération manquée ou mal lue.
+6. **Empreinte** = identifiant bancaire s'il existe ; sinon compte | date |
+   montant | libellé normalisé | rang d'occurrence. Toute empreinte déjà
+   présente dans le Journal est ignorée → réimporter un relevé ou des
+   relevés qui se chevauchent est sans danger.
+7. **Rapprochement mobile** : pour chaque nouvelle ligne bancaire, si une
    ligne `Provisoire` existe avec même compte, même montant et date à
    ± N jours → la ligne bancaire reprend la ligne du budget et la note de la
    saisie mobile, la saisie provisoire est supprimée. Une saisie mobile ne
    peut être rapprochée qu'une fois (la plus proche en date).
-6. **Catégorisation** via `Règles` (priorité croissante, premier match) ;
+8. **Catégorisation** via `Règles` (priorité croissante, premier match) ;
    sinon `À classer`.
-7. **Écriture atomique** : toutes les lignes sont préparées en mémoire puis
+9. **Écriture atomique** : toutes les lignes sont préparées en mémoire puis
    écrites en un seul appel ; en cas d'erreur, rien n'est écrit.
-8. **Bilan** : « N lues · N ajoutées · N doublons ignorés · N rapprochées
-   avec le mobile · N à classer ».
+10. **Bilan** : « N lues · solde vérifié ✓ · N ajoutées · N doublons
+    ignorés · N rapprochées avec le mobile · N à classer ». Le solde de
+    clôture lu est proposé pour l'« État actuel » du Patrimoine.
 
-Prérequis d'implémentation : **un export d'exemple de chaque banque**
-(2-3 lignes, montants/noms masqués) pour figer les noms de colonnes, le
-séparateur, le format de date et l'encodage. Les parseurs sont écrits à
-partir de ces exemples, pas de suppositions.
+**Carte de crédit et double comptage.** Les achats faits avec la
+Mastercard sont importés depuis le relevé Mastercard (compte
+`Mastercard`). Le prélèvement mensuel du relevé sur le compte à vue est un
+`Virement interne`, de même qu'une recharge Revolut payée avec la carte et
+les virements entre ses propres comptes. Ainsi chaque dépense est comptée
+une seule fois, au moment de l'achat. L'encours de la carte apparaît comme
+`Dette` dans le Patrimoine.
+
+Prérequis d'implémentation : un **relevé Mastercard** réel pour figer son
+parseur. Les fixtures de test sont des extraits **anonymisés et
+réécrits avec des valeurs fictives** (structure identique, aucune donnée
+réelle).
 
 ### 5.2 Saisie mobile — Google Form
 
 - Formulaire réservé aux **sorties** (dépenses et versements d'épargne) ;
   les revenus arrivent par l'import.
 - Champs : Montant (positif), Ligne du budget (lignes Dépense + Épargne),
-  Compte (Belfius / Revolut / Espèces), Note. Date = horodatage.
+  Compte (Belfius / Mastercard / Revolut / Espèces), Note. Date = horodatage.
 - Déclencheur `onFormSubmit` : ajoute une ligne au Journal, montant négatif,
-  Source `Mobile`, Statut `Provisoire` (Belfius/Revolut) ou `OK` (Espèces).
+  Source `Mobile`, Statut `Provisoire` (comptes bancaires) ou `OK` (Espèces).
 - `Budget → Mettre à jour le formulaire` : resynchronise la liste des lignes
   du budget (Dépense + Épargne) dans le formulaire.
 
 ### 5.3 Clôture — `Budget → Clôturer le mois`
 
-1. Demande le mois à clôturer (défaut : mois précédent).
+1. Demande le mois à clôturer (défaut : mois précédent). Les soldes de
+   clôture lus lors des imports du mois pré-remplissent l'« État actuel »
+   (modifiables).
 2. Avertit (sans bloquer) s'il reste des lignes `À classer` ou `Provisoire`
    sur ce mois.
 3. Si le mois existe déjà dans l'historique → confirmation avant écrasement.
@@ -256,7 +303,8 @@ extra possible » du tableau de bord utilisent cette ligne.
 
 ### 6.7 Patrimoine
 
-Valeur nette = Σ actifs − Σ dettes, par mois clôturé. Plus-value
+Valeur nette = Σ actifs − Σ dettes (dont l'encours de la carte de
+crédit), par mois clôturé. Plus-value
 ETF/crypto = valeur − total versé réel (cumul du Journal sur la ligne
 Épargne correspondante). Graphique d'évolution sur le tableau de bord.
 
@@ -267,13 +315,14 @@ apps-script/
   appsscript.json
   Menu.gs           onOpen : menu Budget
   Install.gs        installation idempotente (Form, trigger, protections)
-  ImportDialog.html sélecteur de fichier
+  ImportDialog.html sélecteur de PDF + extraction du texte avec pdf.js
   Import.gs         orchestration : lit le Journal/Règles, appelle core, écrit
   Close.gs          clôture mensuelle
   Form.gs           onFormSubmit, synchro de la liste du formulaire
   core.js           logique pure (aucun appel Google) :
-                    parseBelfius, parseRevolut, detectFormat, fingerprint,
-                    matchRule, matchMobile, normalizeText
+                    detectStatement, parseBelfiusAccount,
+                    parseBelfiusMastercard, parseRevolut, checkBalances,
+                    fingerprint, matchRule, matchMobile, normalizeText
 ```
 
 `core.js` est valide à la fois comme fichier Apps Script et comme module
@@ -284,7 +333,8 @@ testé hors Google.
 
 | Situation | Comportement |
 |---|---|
-| CSV de format inconnu | Message, aucun import |
+| PDF de type inconnu ou illisible (scan sans texte) | Message, aucun import |
+| Somme des opérations ≠ écart des soldes | Import refusé, écart affiché |
 | Erreur pendant l'import | Rien n'est écrit (écriture unique en fin de traitement) |
 | Devise ≠ EUR | Ligne importée en `À classer`, devise en note |
 | Mois déjà clôturé | Confirmation avant écrasement |
@@ -303,7 +353,7 @@ budget/
   apps-script/…                 § 7
   tests/
     core.test.js                tests Node (node:test) des fonctions pures
-    fixtures/                   CSV d'exemple anonymisés (valeurs fictives)
+    fixtures/                   textes de relevés réécrits avec des valeurs fictives
     test_workbook.py            vérifications du classeur généré
   dist/                         .xlsx générés (.gitignore)
   README.md                     installation + routine mensuelle
@@ -331,11 +381,18 @@ classeur soit vérifiable automatiquement et reste utilisable dans Excel
 1. Recalcul LibreOffice : **0 erreur de formule**.
 2. Projection sans aucune clôture = projection v2, à l'écart près du
    décalage du salaire (§ 6.1), écart chiffré et expliqué.
-3. `core.test.js` couvre : détection de format, parsing Belfius et Revolut
-   (fixtures), empreinte et dédoublonnage (réimport d'un fichier qui
-   chevauche), virements internes, priorité des règles, rapprochement mobile
-   (cas : match, hors fenêtre, deux candidats, espèces jamais rapprochées).
-4. Jeu d'essai : un mois fictif d'environ 100 transactions + une clôture →
+3. `core.test.js` couvre : détection du type de relevé, parsing Belfius
+   compte à vue, Mastercard et Revolut (fixtures : descriptions sur
+   plusieurs lignes, en-têtes de page répétés, montants ≥ 1 000 avec
+   séparateur de milliers), contrôle des soldes (cas juste et cas d'une
+   opération manquante → refus), empreinte et dédoublonnage (réimport d'un
+   relevé qui chevauche), virements internes (remboursement Mastercard,
+   recharge Revolut par carte), conditions de montant des règles, priorité
+   des règles, rapprochement mobile (cas : match, hors fenêtre, deux
+   candidats, espèces jamais rapprochées).
+4. Validation sur les **vrais relevés de l'utilisateur, en local
+   uniquement** (jamais versionnés) : solde vérifié au centime pour chacun.
+5. Jeu d'essai : un mois fictif d'environ 100 transactions + une clôture →
    vérification manuelle de `Réel vs Prévu`, du recalage du `Plan`, des
    `Objectifs` et du `Patrimoine`.
-5. Aucune donnée personnelle dans les fichiers versionnés.
+6. Aucune donnée personnelle dans les fichiers versionnés.
